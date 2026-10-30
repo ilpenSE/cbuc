@@ -21,6 +21,20 @@
 #include <string.h>
 #include <errno.h>
 
+// You can change these to align with your environment
+// or when you do cross-compilation
+static const char *MINGW_COMPILER = "x86_64-w64-mingw32-gcc";
+static const char *GCC_COMPILER = "gcc";
+static const char *CLANG_COMPILER = "clang";
+static const char *MSVC_COMPILER = "cl";
+static const char *INTEL_COMPILER = "icx";
+
+#ifdef _WIN32
+#define NATIVE_COMPILER "cl"
+#else
+#define NATIVE_COMPILER "cc"
+#endif
+
 // External commands
 typedef struct Cmd {
   const char **items;
@@ -33,25 +47,43 @@ typedef struct CmdRunOpts {
   bool reset;
 } CmdRunOpts;
 
-#define cmd_append(cmd, ...) \
-  cmd_append_impl((cmd), sizeof((const char *[]){__VA_ARGS__})/sizeof(*(const char *[]){__VA_ARGS__}), __VA_ARGS__)
-CBUCDEF Cmd *cmd_append_impl(Cmd *cmd, size_t count, ...);
+// Append a flag to Cmd directly
+#define cmd_append da_append
 
+// Run builded Cmd structure
 #define cmd_run(cmd, ...) \
   cmd_run_impl((cmd), (CmdRunOpts){.log=true, .reset=true, __VA_ARGS__})
 CBUCDEF bool cmd_run_impl(Cmd *cmd, CmdRunOpts opts);
 
+// Reset whole Cmd array (Does not free it's elements)
 CBUCDEF void cmd_reset(Cmd *cmd);
 
+// Appends NATIVE_COMPILER to Cmd
 CBUCDEF Cmd *cmd_native_compiler(Cmd *cmd);
+// Appends a compiler which is compiled this program to Cmd
 CBUCDEF Cmd *cmd_self_compiler(Cmd *cmd);
+// Appends output flag to Cmd (-o or /Fe)
 CBUCDEF Cmd *cmd_output(Cmd *cmd, const char *file_name);
 
+// Appends input(s) to Cmd
 #define cmd_input(cmd, ...) \
   cmd_input_impl((cmd), sizeof((const char *[]){__VA_ARGS__})/sizeof(*(const char *[]){__VA_ARGS__}), __VA_ARGS__)
 CBUCDEF Cmd *cmd_input_impl(Cmd *cmd, int n, ...);
 
 // Rebuild urself
+/*
+  You use it like this:
+  ```c
+  int main(int argc, char **argv)
+  {
+    GO_REBUILD_URSELF(argc, argv);
+  }
+  ```
+
+  This thing detects changes by comparing last modification times of your .c file and binary
+  It saves the binary by renaming it to "<bin>.old" then it re-compiles itself using native compiler
+  Finally, it runs new binary with flags you provided before and quits.
+*/
 #define GO_REBUILD_URSELF(argc, argv, ...) \
   if (!cbuc_rebuild_urself_impl((argc), (argv), __FILE__, sizeof((const char *[]){__VA_ARGS__})/sizeof(*(const char *[]){__VA_ARGS__}), ##__VA_ARGS__)) \
   { \
@@ -88,6 +120,9 @@ typedef struct {
 } WString;
 
 // Dynamic arrays
+
+// Reserve "extra" amount of elements, if current count + extra doesn't fit, reallocate some space
+// void da_reserve(array<T> *arr, size_t extra);
 #define da_reserve(arr, extra)                                                     \
   do {                                                                             \
     if ((arr)->count + extra >= (arr)->capacity) {                                 \
@@ -102,22 +137,30 @@ typedef struct {
     }                                                                              \
   } while (0)
 
+// Append an element to the dynamic array
+// void da_append(array<T> *arr, T item);
 #define da_append(arr, item)               \
   do {                                     \
     da_reserve((arr), 1);                  \
     (arr)->items[(arr)->count++] = (item); \
   } while (0)
 
+// Merge `arr2` to `arr1` (Doesn't mutate `arr2`)
+// void da_append(array<T> *arr1, array<T> *arr2);
 #define da_merge(arr1, arr2) \
   da_concat((arr1), (arr2)->items, (arr2)->count)
 
-#define da_concat(arr1, ptr, len)                    \
-  do {                                               \
-    da_reserve((arr1), len);                         \
-    memcpy((arr1)->items + (arr1)->count, ptr, len); \
-    (arr1)->count += (len);                          \
+// Concat a buffer pointed by `ptr` and sized by `len` to `arr`
+// void da_append(array<T> *arr, T *ptr, size_t len);
+#define da_concat(arr, ptr, len)                   \
+  do {                                             \
+    da_reserve((arr), len);                        \
+    memcpy((arr)->items + (arr)->count, ptr, len); \
+    (arr)->count += (len);                         \
   } while (0)
 
+// Free the items and zero `arr`
+// void da_free(array<T> *arr)
 #define da_free(arr)     \
   do {                   \
     free((arr)->items);  \
@@ -260,26 +303,22 @@ CBUCDEF bool cbuc_rebuild_urself_impl(int argc, char **argv, const char *file_na
 
 CBUCDEF Cmd *cmd_native_compiler(Cmd *cmd)
 {
-#ifdef _WIN32
-  cmd_append(cmd, "cl");
-#else
-  cmd_append(cmd, "cc");
-#endif
+  cmd_append(cmd, NATIVE_COMPILER);
   return cmd;
 }
 
 CBUCDEF Cmd *cmd_self_compiler(Cmd *cmd)
 {
 #ifdef __clang__ // LLVM's Clang
-  cmd_append(cmd, "clang");
+  cmd_append(cmd, CLANG_COMPILER);
 #elif defined(__MINGW32__) // MinGW
-  cmd_append(cmd, "x86_64-w64-mingw32-gcc");
+  cmd_append(cmd, MINGW_COMPILER);
 #elif defined(__GNUC__) // GNU Compiler Collection
-  cmd_append(cmd, "gcc");
+  cmd_append(cmd, GCC_COMPILER);
 #elif defined(_MSC_VER) // Microsoft's C/C++ compiler (MSVC)
-  cmd_append(cmd, "cl");
+  cmd_append(cmd, MSVC_COMPILER);
 #elif defined(__INTEL_LLVM_COMPILER) // Intel Modern LLVM-based C/C++ compiler
-  cmd_append(cmd, "icx");
+  cmd_append(cmd, INTEL_COMPILER);
 #endif
   return cmd;
 }
@@ -302,19 +341,6 @@ CBUCDEF Cmd *cmd_input_impl(Cmd *cmd, int n, ...)
   for (int i = 0; i < n; i++) {
     const char *arg = va_arg(args, const char *);
     cmd_append(cmd, arg);
-  }
-  va_end(args);
-  return cmd;
-}
-
-
-CBUCDEF Cmd *cmd_append_impl(Cmd *cmd, size_t count, ...)
-{
-  va_list args;
-  va_start(args, count);
-  for (size_t i = 0; i < count; i++) {
-    const char *arg = va_arg(args, const char *);
-    da_append(cmd, arg);
   }
   va_end(args);
   return cmd;
